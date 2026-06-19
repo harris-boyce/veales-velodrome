@@ -366,9 +366,9 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     dirLight.position.set(5, 10, 10);
     scene.add(dirLight);
 
-    const camera = new THREE.OrthographicCamera(-13, 13, 7, -21, 0.1, 100);
+    const camera = new THREE.OrthographicCamera(-13, 13, 6.6, -21.4, 0.1, 100);
     camera.position.copy(CAM_POSITIONS.front);
-    camera.lookAt(0, -7, 0);
+    camera.lookAt(0, 0, 0);
 
     // Materials
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -440,8 +440,8 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
       const fh = 28;
       camera.left   = -fh * aspect / 2;
       camera.right  =  fh * aspect / 2;
-      camera.top    =  7;
-      camera.bottom = -21;
+      camera.top    =  6.6;
+      camera.bottom = -21.4;
       camera.updateProjectionMatrix();
     };
     updateSize();
@@ -488,10 +488,9 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     accentMat.emissive.setHex(accentHex);
     trailMat.color.setHex(accentHex);
 
-    // Camera
+    // Camera — look straight along axis (no tilt), frustum = world Y directly
     camera.position.copy(CAM_POSITIONS[view]);
-    camera.lookAt(0, -7, 0);
-    camera.up.set(0, 1, 0);
+    camera.lookAt(0, 0, 0);
 
     // Ground line orientation per view
     if (view === "side") {
@@ -638,7 +637,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
         color: p.accent, fontWeight: 700,
       }}>{phase.toUpperCase()}</div>
 
-      <div ref={containerRef} style={{ position: "relative", width: "100%", maxWidth: 300, margin: "0 auto" }}>
+      <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
         <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "auto" }} />
         <div style={{
           position: "absolute", bottom: 8, left: 0, right: 0,
