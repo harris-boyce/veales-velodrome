@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import * as THREE from "three";
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -316,56 +317,317 @@ function useAnimT(playing, speed) {
   return animT;
 }
 
-// ─── STICK FIGURE ─────────────────────────────────────────────────────────────
+// ─── THREE.JS HELPERS ─────────────────────────────────────────────────────────
+const _up3  = new THREE.Vector3(0, 1, 0);
+const _dir3 = new THREE.Vector3();
+const _mid3 = new THREE.Vector3();
+function updateLimb(mesh, start, end) {
+  _dir3.subVectors(end, start);
+  const len = _dir3.length();
+  if (len < 0.001) { mesh.visible = false; return; }
+  mesh.visible = true;
+  mesh.scale.y = len;
+  _mid3.addVectors(start, end).multiplyScalar(0.5);
+  mesh.position.copy(_mid3);
+  mesh.quaternion.setFromUnitVectors(_up3, _dir3.normalize());
+}
+
+function offsetTo3D(view, dx, dy) {
+  if (view === "side") return new THREE.Vector3(0, -dy / 10, -dx / 10);
+  return new THREE.Vector3(dx / 10, -dy / 10, 0);
+}
+
+const CAM_POSITIONS = {
+  front: new THREE.Vector3(0,  0,  30),
+  side:  new THREE.Vector3(30, 0,   0),
+  back:  new THREE.Vector3(0,  0, -30),
+};
+
+// ─── STICK FIGURE (THREE.JS) ──────────────────────────────────────────────────
 function PitcherFigure({ pitchId, view, hand, animT }) {
   const p = PITCHES[pitchId];
-  const isLeft = hand === "L";
-  const kf = ARM_KF[view];
-  const sx = SHOULDER_X[view][hand];
-  const sy = 78;
-  const cx = 140;
+  const canvasRef   = useRef(null);
+  const containerRef = useRef(null);
+  const sceneRef    = useRef(null);
 
-  let [eDx, eDy, wDx, wDy] = interpKF(kf, animT);
-  if (isLeft) { eDx = -eDx; wDx = -wDx; }
+  // ── One-time setup ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
 
-  const modT    = ease(clamp((animT - 0.62) / 0.16, 0, 1));
-  const modDecay = ease(clamp((0.82 - animT) / 0.10, 0, 1));
-  const modScale = Math.min(modT, modDecay);
-  const mod = WRIST_MOD[pitchId];
-  const elbow = [sx + eDx, sy + eDy];
-  const wrist = [
-    sx + wDx + mod.dx * modScale * (isLeft ? -1 : 1),
-    sy + wDy + mod.dy * modScale,
-  ];
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x13151c);
 
-  const gsx = 280 - sx;
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    dirLight.position.set(5, 10, 10);
+    scene.add(dirLight);
 
-  const gloveRaise = ease(clamp(
-    animT < 0.38 ? animT / 0.38 :
-    animT < 0.68 ? 1 - (animT - 0.38) / 0.30 : 0,
-    0, 1
-  ));
-  let gEx, gEy, gWx, gWy;
-  if (view === "side") {
-    const fwd = isLeft ? -1 : 1;
-    gEx = gsx + fwd * lerp(12, 30, gloveRaise);
-    gEy = sy + lerp(38, 8, gloveRaise);
-    gWx = gsx + fwd * lerp(22, 50, gloveRaise);
-    gWy = sy + lerp(70, 20, gloveRaise);
-  } else {
-    const inDir = gsx < cx ? 1 : -1;
-    gEx = gsx + inDir * lerp(20, 12, gloveRaise);
-    gEy = sy + lerp(38, 6, gloveRaise);
-    gWx = gsx + inDir * lerp(16, 8, gloveRaise);
-    gWy = sy + lerp(70, 14, gloveRaise);
-  }
+    const camera = new THREE.OrthographicCamera(-13, 13, 7, -21, 0.1, 100);
+    camera.position.copy(CAM_POSITIONS.front);
+    camera.lookAt(0, -7, 0);
 
-  const strideP = ease(clamp((animT - 0.10) / 0.42, 0, 1));
-  const leanAngle = lerp(0, isLeft ? -10 : 10, ease(clamp((animT - 0.40) / 0.30, 0, 1)));
+    // Materials
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0xf0eee9, transparent: true, opacity: 0.65,
+    });
+    const dimMat = new THREE.MeshStandardMaterial({
+      color: 0xf0eee9, transparent: true, opacity: 0.35,
+    });
+    const accentMat = new THREE.MeshStandardMaterial({
+      color: 0x2563eb, emissive: 0x2563eb, emissiveIntensity: 0.35,
+    });
+    const ballMat = new THREE.MeshStandardMaterial({ color: 0xf5e6d0 });
+
+    const makeSphere = (r, mat) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), mat);
+      scene.add(m); return m;
+    };
+    const makeLimb = (r, mat) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 1, 8), mat);
+      scene.add(m); return m;
+    };
+
+    // Joints
+    const headMesh      = makeSphere(0.95, bodyMat);
+    const shoulderMesh  = makeSphere(0.55, accentMat);
+    const elbowMesh     = makeSphere(0.45, accentMat);
+    const wristMesh     = makeSphere(0.60, accentMat);
+    const ballMesh      = makeSphere(0.38, ballMat);
+    const gloveWristMesh = makeSphere(0.35, dimMat);
+
+    // Limbs
+    const torsoMesh       = makeLimb(0.38, bodyMat);
+    const hipMesh         = makeLimb(0.22, bodyMat);
+    const pivThighMesh    = makeLimb(0.30, dimMat);
+    const pivShinMesh     = makeLimb(0.28, dimMat);
+    const strideThighMesh = makeLimb(0.30, bodyMat);
+    const strideShinMesh  = makeLimb(0.28, bodyMat);
+    const gloveUpperMesh  = makeLimb(0.22, dimMat);
+    const gloveForeArmMesh = makeLimb(0.20, dimMat);
+    const upperArmMesh    = makeLimb(0.32, accentMat);
+    const forearmMesh     = makeLimb(0.28, accentMat);
+
+    // Ground line
+    const groundGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-13, -19.4, 0),
+      new THREE.Vector3( 13, -19.4, 0),
+    ]);
+    const groundLine = new THREE.Line(groundGeo,
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.10 }));
+    scene.add(groundLine);
+
+    // Wrist trail
+    const TRAIL_N = 38;
+    const trailPositions = new Float32Array(TRAIL_N * 3);
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
+    const trailMat = new THREE.LineDashedMaterial({
+      color: 0x2563eb, dashSize: 0.3, gapSize: 0.5, transparent: true, opacity: 0.35,
+    });
+    const trailLine = new THREE.Line(trailGeo, trailMat);
+    scene.add(trailLine);
+
+    // Resize handler
+    const updateSize = () => {
+      const w = container.clientWidth;
+      const h = Math.round(w * 298 / 280) || 1;
+      renderer.setSize(w, h, false);
+      const aspect = w / h;
+      const fh = 28;
+      camera.left   = -fh * aspect / 2;
+      camera.right  =  fh * aspect / 2;
+      camera.top    =  7;
+      camera.bottom = -21;
+      camera.updateProjectionMatrix();
+    };
+    updateSize();
+
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(container);
+
+    sceneRef.current = {
+      renderer, scene, camera,
+      accentMat, trailMat, trailPositions, trailGeo,
+      meshes: {
+        headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
+        torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
+        strideThighMesh, strideShinMesh,
+        gloveUpperMesh, gloveForeArmMesh, upperArmMesh, forearmMesh,
+        groundLine,
+      },
+    };
+
+    return () => {
+      ro.disconnect();
+      renderer.dispose();
+      sceneRef.current = null;
+    };
+  }, []);
+
+  // ── Per-frame update ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s) return;
+    const { renderer, scene, camera, accentMat, trailMat, trailPositions, trailGeo, meshes } = s;
+    const {
+      headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
+      torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
+      strideThighMesh, strideShinMesh,
+      gloveUpperMesh, gloveForeArmMesh, upperArmMesh, forearmMesh,
+      groundLine,
+    } = meshes;
+
+    const isLeft = hand === "L";
+    const pp = PITCHES[pitchId];
+    const accentHex = parseInt(pp.accent.slice(1), 16);
+    accentMat.color.setHex(accentHex);
+    accentMat.emissive.setHex(accentHex);
+    trailMat.color.setHex(accentHex);
+
+    // Camera
+    camera.position.copy(CAM_POSITIONS[view]);
+    camera.lookAt(0, -7, 0);
+    camera.up.set(0, 1, 0);
+
+    // Ground line orientation per view
+    if (view === "side") {
+      groundLine.geometry.setFromPoints([
+        new THREE.Vector3(0, -19.4, -13),
+        new THREE.Vector3(0, -19.4,  13),
+      ]);
+    } else {
+      groundLine.geometry.setFromPoints([
+        new THREE.Vector3(-13, -19.4, 0),
+        new THREE.Vector3( 13, -19.4, 0),
+      ]);
+    }
+
+    // Throw arm keyframes
+    let [eDx, eDy, wDx, wDy] = interpKF(ARM_KF[view], animT);
+    if (isLeft) { eDx = -eDx; wDx = -wDx; }
+
+    const modT     = ease(clamp((animT - 0.62) / 0.16, 0, 1));
+    const modDecay = ease(clamp((0.82 - animT) / 0.10, 0, 1));
+    const modScale = Math.min(modT, modDecay);
+    const mod = WRIST_MOD[pitchId];
+    const modDx = mod.dx * modScale * (isLeft ? -1 : 1);
+    const modDy = mod.dy * modScale;
+
+    // Shoulder position in 3D
+    const sPos = view === "side"
+      ? new THREE.Vector3(0, 0, 0)
+      : new THREE.Vector3((SHOULDER_X[view][hand] - 140) / 10, 0, 0);
+
+    const elbowPos = sPos.clone().add(offsetTo3D(view, eDx, eDy));
+    const wristPos = sPos.clone().add(offsetTo3D(view, wDx + modDx, wDy + modDy));
+
+    // Body positions
+    const headPos  = new THREE.Vector3(0,  4.6, 0);
+    const neckPos  = new THREE.Vector3(0,  1.0, 0);
+    const hipPos   = new THREE.Vector3(0, -7.5, 0);
+    const piv      = isLeft ? 1 : -1;
+    const str      = -piv;
+
+    // Hip laterals
+    const hipPivPos  = new THREE.Vector3(piv * 2.2, -7.5, 0);
+    const hipStrPos  = new THREE.Vector3(str * 2.2, -7.5, 0);
+
+    // Legs
+    const strideP = ease(clamp((animT - 0.10) / 0.42, 0, 1));
+
+    let pivKneePos, pivFootPos, strideKneePos, strideFootPos;
+    if (view === "side") {
+      const pivZ = piv * 1.0;
+      pivKneePos    = new THREE.Vector3(0, -13.6, pivZ * 1.4);
+      pivFootPos    = new THREE.Vector3(0, -19.4, pivZ * 1.0);
+      const sKZ     = lerp(str * 0.8, str * 5.8, strideP);
+      const sKkneeZ = lerp(str * 0.8, str * 3.6, strideP);
+      strideKneePos = new THREE.Vector3(0, lerp(-13.6, -10.6, strideP), sKkneeZ);
+      strideFootPos = new THREE.Vector3(0, -19.4, sKZ);
+    } else {
+      pivKneePos    = new THREE.Vector3(piv * 1.7, -13.6, 0);
+      pivFootPos    = new THREE.Vector3(piv * 2.0, -19.4, 0);
+      const sklX    = lerp(str * 1.3, str * 0.3, strideP);
+      strideKneePos = new THREE.Vector3(sklX, lerp(-13.6, -10.6, strideP), 0);
+      strideFootPos = new THREE.Vector3(str * 0.7, -19.4, 0);
+    }
+
+    // Glove arm
+    const sx_svg   = SHOULDER_X[view][hand];
+    const gsx_svg  = 280 - sx_svg;
+    const gloveRaise = ease(clamp(
+      animT < 0.38 ? animT / 0.38 :
+      animT < 0.68 ? 1 - (animT - 0.38) / 0.30 : 0,
+      0, 1
+    ));
+
+    let gShoulderPos, gElbowPos, gWristPos;
+    if (view === "side") {
+      const fwd = isLeft ? 1 : -1;
+      gShoulderPos = new THREE.Vector3(0, 0, 0);
+      gElbowPos    = new THREE.Vector3(0, lerp(-3.8, -0.8, gloveRaise), lerp(fwd * 1.2, fwd * 3.0, gloveRaise));
+      gWristPos    = new THREE.Vector3(0, lerp(-7.0, -2.0, gloveRaise), lerp(fwd * 2.2, fwd * 5.0, gloveRaise));
+    } else {
+      const inDir  = gsx_svg < 140 ? 1 : -1;
+      gShoulderPos = new THREE.Vector3((gsx_svg - 140) / 10, 0, 0);
+      gElbowPos    = new THREE.Vector3(
+        gShoulderPos.x + inDir * lerp(2.0, 1.2, gloveRaise),
+        lerp(-3.8, -0.6, gloveRaise), 0
+      );
+      gWristPos    = new THREE.Vector3(
+        gShoulderPos.x + inDir * lerp(1.6, 0.8, gloveRaise),
+        lerp(-7.0, -1.4, gloveRaise), 0
+      );
+    }
+
+    // Apply positions
+    headMesh.position.copy(headPos);
+    updateLimb(torsoMesh, neckPos, hipPos);
+    updateLimb(hipMesh, hipPivPos, hipStrPos);
+    updateLimb(pivThighMesh, hipPivPos, pivKneePos);
+    updateLimb(pivShinMesh,  pivKneePos, pivFootPos);
+    updateLimb(strideThighMesh, hipStrPos, strideKneePos);
+    updateLimb(strideShinMesh,  strideKneePos, strideFootPos);
+    updateLimb(gloveUpperMesh,   gShoulderPos, gElbowPos);
+    updateLimb(gloveForeArmMesh, gElbowPos,    gWristPos);
+    gloveWristMesh.position.copy(gWristPos);
+    shoulderMesh.position.copy(sPos);
+    elbowMesh.position.copy(elbowPos);
+    wristMesh.position.copy(wristPos);
+    updateLimb(upperArmMesh, sPos,     elbowPos);
+    updateLimb(forearmMesh,  elbowPos, wristPos);
+    ballMesh.position.copy(wristPos);
+
+    // Wrist trail
+    const TRAIL_N = 38;
+    const sPosTrail = view === "side"
+      ? new THREE.Vector3(0, 0, 0)
+      : new THREE.Vector3((SHOULDER_X[view][hand] - 140) / 10, 0, 0);
+    for (let i = 0; i < TRAIL_N; i++) {
+      const tt = i / (TRAIL_N - 1);
+      let [,, wdx, wdy] = interpKF(ARM_KF[view], tt);
+      if (isLeft) wdx = -wdx;
+      const wMod = WRIST_MOD[pitchId];
+      const mT2  = ease(clamp((tt - 0.62) / 0.16, 0, 1));
+      const mD2  = ease(clamp((0.82 - tt) / 0.10, 0, 1));
+      const mS2  = Math.min(mT2, mD2);
+      const off  = offsetTo3D(view, wdx + wMod.dx * mS2 * (isLeft ? -1 : 1), wdy + wMod.dy * mS2);
+      const pos  = sPosTrail.clone().add(off);
+      trailPositions[i * 3]     = pos.x;
+      trailPositions[i * 3 + 1] = pos.y;
+      trailPositions[i * 3 + 2] = pos.z;
+    }
+    trailGeo.attributes.position.needsUpdate = true;
+    trailLine.computeLineDistances();
+
+    renderer.render(scene, camera);
+  }, [animT, view, hand, pitchId]);
+
   const phase = PHASES.find(([s, e]) => animT >= s && animT < e)?.[2] ?? "Set Position";
-
-  const piv = isLeft ? 1 : -1;
-  const str = -piv;
 
   return (
     <div>
@@ -376,124 +638,23 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
         color: p.accent, fontWeight: 700,
       }}>{phase.toUpperCase()}</div>
 
-      <svg viewBox="0 0 280 298" width="100%"
-        style={{ maxWidth: 300, display: "block", margin: "0 auto" }}>
-
-        <line x1="18" y1="274" x2="262" y2="274"
-          stroke="rgba(255,255,255,0.10)" strokeWidth="1.5" />
-
-        <polyline
-          points={Array.from({ length: 38 }, (_, i) => {
-            const tt = i / 37;
-            let [,, wdx, wdy] = interpKF(kf, tt);
-            if (isLeft) wdx = -wdx;
-            return `${sx + wdx},${sy + wdy}`;
-          }).join(" ")}
-          fill="none"
-          stroke={`${p.accent}18`}
-          strokeWidth="2"
-          strokeDasharray="3 5"
-        />
-
-        {view === "side" ? (() => {
-          const strideEndX  = lerp(cx + str * 8,  cx + str * 58, strideP);
-          const strideKneeX = lerp(cx + str * 8,  cx + str * 36, strideP);
-          const strideKneeY = lerp(155, 215, strideP);
-          return (
-            <>
-              <line x1={cx + piv * 10} y1={155} x2={cx + piv * 14} y2={216}
-                stroke="rgba(240,238,233,0.40)" strokeWidth="3.5" strokeLinecap="round" />
-              <line x1={cx + piv * 14} y1={216} x2={cx + piv * 20} y2={272}
-                stroke="rgba(240,238,233,0.40)" strokeWidth="3.5" strokeLinecap="round" />
-              <line x1={cx + str * 8} y1={155} x2={strideKneeX} y2={strideKneeY}
-                stroke="rgba(240,238,233,0.65)" strokeWidth="4.5" strokeLinecap="round" />
-              <line x1={strideKneeX} y1={strideKneeY} x2={strideEndX} y2={272}
-                stroke="rgba(240,238,233,0.65)" strokeWidth="4.5" strokeLinecap="round" />
-            </>
-          );
-        })() : (() => {
-          const sklX = lerp(cx + str * 13, cx + str * 13 + str * -10, strideP);
-          const sklY = lerp(155, 214, strideP);
-          return (
-            <>
-              <line x1={cx + piv * 13} y1={155} x2={cx + piv * 17} y2={214}
-                stroke="rgba(240,238,233,0.40)" strokeWidth="3.5" strokeLinecap="round" />
-              <line x1={cx + piv * 17} y1={214} x2={cx + piv * 20} y2={272}
-                stroke="rgba(240,238,233,0.40)" strokeWidth="3.5" strokeLinecap="round" />
-              <line x1={cx + str * 13} y1={155} x2={sklX} y2={sklY}
-                stroke="rgba(240,238,233,0.65)" strokeWidth="4.5" strokeLinecap="round" />
-              <line x1={sklX} y1={sklY} x2={cx + str * 7} y2={272}
-                stroke="rgba(240,238,233,0.65)" strokeWidth="4.5" strokeLinecap="round" />
-            </>
-          );
-        })()}
-
-        <rect x={115} y={68} width={50} height={82} rx={7}
-          fill="rgba(240,238,233,0.05)"
-          stroke="rgba(240,238,233,0.58)"
-          strokeWidth="2.5"
-          transform={`rotate(${leanAngle},${cx},108)`} />
-        <line x1={cx - 22} y1={153} x2={cx + 22} y2={153}
-          stroke="rgba(240,238,233,0.55)" strokeWidth="4" strokeLinecap="round" />
-        <line x1={cx} y1={50} x2={cx} y2={68}
-          stroke="rgba(240,238,233,0.68)" strokeWidth="4" strokeLinecap="round" />
-        <circle cx={cx} cy={32} r={19}
-          fill="none" stroke="rgba(240,238,233,0.75)" strokeWidth="2.8" />
-        {view !== "back"
-          ? <path d={`M${cx - 11} 16 Q${cx} 9 ${cx + 11} 16`}
-              fill="none" stroke="rgba(240,238,233,0.50)" strokeWidth="2.5" strokeLinecap="round" />
-          : <line x1={cx - 13} y1={14} x2={cx + 13} y2={14}
-              stroke="rgba(240,238,233,0.50)" strokeWidth="2.5" strokeLinecap="round" />}
-
-        <line x1={gsx} y1={sy} x2={gEx} y2={gEy}
-          stroke="rgba(240,238,233,0.37)" strokeWidth="5" strokeLinecap="round" />
-        <line x1={gEx} y1={gEy} x2={gWx} y2={gWy}
-          stroke="rgba(240,238,233,0.34)" strokeWidth="4" strokeLinecap="round" />
-        <circle cx={gWx} cy={gWy} r={7.5}
-          fill="rgba(240,238,233,0.08)" stroke="rgba(240,238,233,0.30)" strokeWidth="1.5" />
-
-        <line x1={sx} y1={sy} x2={elbow[0]} y2={elbow[1]}
-          stroke={p.accent} strokeWidth="7.5" strokeLinecap="round"
-          style={{ filter: `drop-shadow(0 0 6px ${p.accent}AA)` }} />
-        <line x1={elbow[0]} y1={elbow[1]} x2={wrist[0]} y2={wrist[1]}
-          stroke={p.accent} strokeWidth="6" strokeLinecap="round"
-          style={{ filter: `drop-shadow(0 0 4px ${p.accent}88)` }} />
-
-        <circle cx={sx}        cy={sy}        r={8.5} fill={p.accent} opacity={0.95} />
-        <circle cx={elbow[0]}  cy={elbow[1]}  r={7.0} fill={p.accent} opacity={0.90} />
-        <circle cx={wrist[0]}  cy={wrist[1]}  r={9.5} fill={p.accent} opacity={0.78} />
-        <circle cx={wrist[0]}  cy={wrist[1]}  r={7.5} fill="#f5e6d0"  opacity={0.94} />
-
-        {animT >= 0.60 && animT <= 0.82 && pitchId !== 0 && (() => {
-          const labels = { 1: "↓ SNAP", 2: "PRONATE", 3: "CUT" };
-          const label = labels[pitchId];
-          if (!label) return null;
-          const lx = wrist[0] + (isLeft ? -32 : 32);
-          return (
-            <>
-              <line x1={wrist[0]} y1={wrist[1]}
-                x2={wrist[0] + mod.dx * 0.85 * modScale * (isLeft ? -1 : 1)}
-                y2={wrist[1] + mod.dy * 0.85 * modScale}
-                stroke={p.accent} strokeWidth="2.5" strokeLinecap="round" opacity={0.9} />
-              <text x={lx} y={wrist[1] - 16}
-                textAnchor="middle" fontSize="8" fill={p.accent}
-                fontFamily="ui-monospace, monospace" letterSpacing="0.1em">
-                {label}
-              </text>
-            </>
-          );
-        })()}
-
-        <text x={140} y={292} textAnchor="middle" fontSize="7.5"
-          fill="rgba(255,255,255,0.18)"
-          fontFamily="ui-monospace, monospace" letterSpacing="0.1em">
+      <div ref={containerRef} style={{ position: "relative", width: "100%", maxWidth: 300, margin: "0 auto" }}>
+        <canvas ref={canvasRef} style={{ display: "block", width: "100%" }} />
+        <div style={{
+          position: "absolute", bottom: 8, left: 0, right: 0,
+          textAlign: "center",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 7.5, letterSpacing: "0.1em",
+          color: "rgba(255,255,255,0.18)",
+          pointerEvents: "none",
+        }}>
           {view === "front"
             ? "← FACING PITCHER →"
             : view === "side"
             ? "← BACK  ·  ARM SIDE  ·  PLATE →"
             : "← FACING HOME PLATE →"}
-        </text>
-      </svg>
+        </div>
+      </div>
     </div>
   );
 }
