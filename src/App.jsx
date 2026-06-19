@@ -346,13 +346,14 @@ const CAM_POSITIONS = {
 // ─── STICK FIGURE (THREE.JS) ──────────────────────────────────────────────────
 function PitcherFigure({ pitchId, view, hand, animT }) {
   const p = PITCHES[pitchId];
-  const canvasRef   = useRef(null);
+  const canvasRef    = useRef(null);
   const containerRef = useRef(null);
-  const sceneRef    = useRef(null);
+  const propsRef     = useRef({ pitchId, view, hand, animT });
+  propsRef.current   = { pitchId, view, hand, animT };
 
-  // ── One-time setup ──────────────────────────────────────────────────────────
+  // ── One-time setup + RAF render loop ────────────────────────────────────────
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas    = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
@@ -392,24 +393,25 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     };
 
     // Joints
-    const headMesh      = makeSphere(0.95, bodyMat);
-    const shoulderMesh  = makeSphere(0.55, accentMat);
-    const elbowMesh     = makeSphere(0.45, accentMat);
-    const wristMesh     = makeSphere(0.60, accentMat);
-    const ballMesh      = makeSphere(0.38, ballMat);
+    const headMesh       = makeSphere(1.9,  bodyMat);
+    const shoulderMesh   = makeSphere(0.55, accentMat);
+    const elbowMesh      = makeSphere(0.45, accentMat);
+    const wristMesh      = makeSphere(0.60, accentMat);
+    const ballMesh       = makeSphere(0.38, ballMat);
     const gloveWristMesh = makeSphere(0.35, dimMat);
 
     // Limbs
-    const torsoMesh       = makeLimb(0.38, bodyMat);
-    const hipMesh         = makeLimb(0.22, bodyMat);
-    const pivThighMesh    = makeLimb(0.30, dimMat);
-    const pivShinMesh     = makeLimb(0.28, dimMat);
-    const strideThighMesh = makeLimb(0.30, bodyMat);
-    const strideShinMesh  = makeLimb(0.28, bodyMat);
-    const gloveUpperMesh  = makeLimb(0.22, dimMat);
+    const neckMesh         = makeLimb(0.25, bodyMat);
+    const torsoMesh        = makeLimb(0.38, bodyMat);
+    const hipMesh          = makeLimb(0.22, bodyMat);
+    const pivThighMesh     = makeLimb(0.30, dimMat);
+    const pivShinMesh      = makeLimb(0.28, dimMat);
+    const strideThighMesh  = makeLimb(0.30, bodyMat);
+    const strideShinMesh   = makeLimb(0.28, bodyMat);
+    const gloveUpperMesh   = makeLimb(0.22, dimMat);
     const gloveForeArmMesh = makeLimb(0.20, dimMat);
-    const upperArmMesh    = makeLimb(0.32, accentMat);
-    const forearmMesh     = makeLimb(0.28, accentMat);
+    const upperArmMesh     = makeLimb(0.32, accentMat);
+    const forearmMesh      = makeLimb(0.28, accentMat);
 
     // Ground line
     const groundGeo = new THREE.BufferGeometry().setFromPoints([
@@ -449,182 +451,168 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     const ro = new ResizeObserver(updateSize);
     ro.observe(container);
 
-    sceneRef.current = {
-      renderer, scene, camera,
-      accentMat, trailMat, trailPositions, trailGeo, trailLine,
-      meshes: {
-        headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
-        torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
-        strideThighMesh, strideShinMesh,
-        gloveUpperMesh, gloveForeArmMesh, upperArmMesh, forearmMesh,
-        groundLine,
-      },
+    // RAF loop — reads latest props each frame, no React scheduling lag
+    let rafId;
+    const loop = () => {
+      rafId = requestAnimationFrame(loop);
+      const { pitchId: pid, view: v, hand: h, animT: t } = propsRef.current;
+      const isLeft = h === "L";
+      const pp = PITCHES[pid];
+      const accentHex = parseInt(pp.accent.slice(1), 16);
+      accentMat.color.setHex(accentHex);
+      accentMat.emissive.setHex(accentHex);
+      trailMat.color.setHex(accentHex);
+
+      // Camera
+      camera.position.copy(CAM_POSITIONS[v]);
+      camera.lookAt(0, 0, 0);
+
+      // Ground line orientation per view
+      if (v === "side") {
+        groundLine.geometry.setFromPoints([
+          new THREE.Vector3(0, -19.4, -13),
+          new THREE.Vector3(0, -19.4,  13),
+        ]);
+      } else {
+        groundLine.geometry.setFromPoints([
+          new THREE.Vector3(-13, -19.4, 0),
+          new THREE.Vector3( 13, -19.4, 0),
+        ]);
+      }
+
+      // Throw arm keyframes
+      let [eDx, eDy, wDx, wDy] = interpKF(ARM_KF[v], t);
+      if (isLeft) { eDx = -eDx; wDx = -wDx; }
+
+      const modT     = ease(clamp((t - 0.62) / 0.16, 0, 1));
+      const modDecay = ease(clamp((0.82 - t) / 0.10, 0, 1));
+      const modScale = Math.min(modT, modDecay);
+      const mod  = WRIST_MOD[pid];
+      const modDx = mod.dx * modScale * (isLeft ? -1 : 1);
+      const modDy = mod.dy * modScale;
+
+      // Shoulder position in 3D
+      const sPos = v === "side"
+        ? new THREE.Vector3(0, 0, 0)
+        : new THREE.Vector3((SHOULDER_X[v][h] - 140) / 10, 0, 0);
+
+      const elbowPos = sPos.clone().add(offsetTo3D(v, eDx, eDy));
+      const wristPos = sPos.clone().add(offsetTo3D(v, wDx + modDx, wDy + modDy));
+
+      // Body positions
+      const headPos = new THREE.Vector3(0,  4.6, 0);
+      const neckPos = new THREE.Vector3(0,  1.0, 0);
+      const hipPos  = new THREE.Vector3(0, -7.5, 0);
+      const piv     = isLeft ? 1 : -1;
+      const str     = -piv;
+
+      // Hip laterals
+      const hipPivPos = new THREE.Vector3(piv * 2.2, -7.5, 0);
+      const hipStrPos = new THREE.Vector3(str * 2.2, -7.5, 0);
+
+      // Legs — stride out then smoothly return to start position
+      const strideP = ease(clamp(
+        t < 0.52 ? (t - 0.10) / 0.42 :
+        t > 0.72 ? 1 - (t - 0.72) / 0.28 :
+        1,
+        0, 1
+      ));
+
+      let pivKneePos, pivFootPos, strideKneePos, strideFootPos;
+      if (v === "side") {
+        const pivZ = piv * 1.0;
+        pivKneePos    = new THREE.Vector3(0, -13.6, pivZ * 1.4);
+        pivFootPos    = new THREE.Vector3(0, -19.4, pivZ * 1.0);
+        const sKZ     = lerp(str * 0.8, str * 5.8, strideP);
+        const sKkneeZ = lerp(str * 0.8, str * 3.6, strideP);
+        strideKneePos = new THREE.Vector3(0, lerp(-13.6, -10.6, strideP), sKkneeZ);
+        strideFootPos = new THREE.Vector3(0, -19.4, sKZ);
+      } else {
+        pivKneePos    = new THREE.Vector3(piv * 1.7, -13.6, 0);
+        pivFootPos    = new THREE.Vector3(piv * 2.0, -19.4, 0);
+        const sklX    = lerp(str * 1.3, str * 0.3, strideP);
+        strideKneePos = new THREE.Vector3(sklX, lerp(-13.6, -10.6, strideP), 0);
+        strideFootPos = new THREE.Vector3(str * 0.7, -19.4, 0);
+      }
+
+      // Glove arm
+      const sx_svg  = SHOULDER_X[v][h];
+      const gsx_svg = 280 - sx_svg;
+      const gloveRaise = ease(clamp(
+        t < 0.38 ? t / 0.38 :
+        t < 0.68 ? 1 - (t - 0.38) / 0.30 : 0,
+        0, 1
+      ));
+
+      let gShoulderPos, gElbowPos, gWristPos;
+      if (v === "side") {
+        const fwd = isLeft ? 1 : -1;
+        gShoulderPos = new THREE.Vector3(0, 0, 0);
+        gElbowPos    = new THREE.Vector3(0, lerp(-3.8, -0.8, gloveRaise), lerp(fwd * 1.2, fwd * 3.0, gloveRaise));
+        gWristPos    = new THREE.Vector3(0, lerp(-7.0, -2.0, gloveRaise), lerp(fwd * 2.2, fwd * 5.0, gloveRaise));
+      } else {
+        const inDir  = gsx_svg < 140 ? 1 : -1;
+        gShoulderPos = new THREE.Vector3((gsx_svg - 140) / 10, 0, 0);
+        gElbowPos    = new THREE.Vector3(
+          gShoulderPos.x + inDir * lerp(2.0, 1.2, gloveRaise),
+          lerp(-3.8, -0.6, gloveRaise), 0
+        );
+        gWristPos    = new THREE.Vector3(
+          gShoulderPos.x + inDir * lerp(1.6, 0.8, gloveRaise),
+          lerp(-7.0, -1.4, gloveRaise), 0
+        );
+      }
+
+      // Apply positions
+      headMesh.position.copy(headPos);
+      updateLimb(neckMesh,  neckPos, headPos);
+      updateLimb(torsoMesh, neckPos, hipPos);
+      updateLimb(hipMesh,   hipPivPos, hipStrPos);
+      updateLimb(pivThighMesh,    hipPivPos,    pivKneePos);
+      updateLimb(pivShinMesh,     pivKneePos,   pivFootPos);
+      updateLimb(strideThighMesh, hipStrPos,    strideKneePos);
+      updateLimb(strideShinMesh,  strideKneePos, strideFootPos);
+      updateLimb(gloveUpperMesh,   gShoulderPos, gElbowPos);
+      updateLimb(gloveForeArmMesh, gElbowPos,    gWristPos);
+      gloveWristMesh.position.copy(gWristPos);
+      shoulderMesh.position.copy(sPos);
+      elbowMesh.position.copy(elbowPos);
+      wristMesh.position.copy(wristPos);
+      updateLimb(upperArmMesh, sPos,     elbowPos);
+      updateLimb(forearmMesh,  elbowPos, wristPos);
+      ballMesh.position.copy(wristPos);
+
+      // Wrist trail
+      const sPosTrail = v === "side"
+        ? new THREE.Vector3(0, 0, 0)
+        : new THREE.Vector3((SHOULDER_X[v][h] - 140) / 10, 0, 0);
+      for (let i = 0; i < TRAIL_N; i++) {
+        const tt = i / (TRAIL_N - 1);
+        let [,, wdx, wdy] = interpKF(ARM_KF[v], tt);
+        if (isLeft) wdx = -wdx;
+        const wMod = WRIST_MOD[pid];
+        const mT2  = ease(clamp((tt - 0.62) / 0.16, 0, 1));
+        const mD2  = ease(clamp((0.82 - tt) / 0.10, 0, 1));
+        const mS2  = Math.min(mT2, mD2);
+        const off  = offsetTo3D(v, wdx + wMod.dx * mS2 * (isLeft ? -1 : 1), wdy + wMod.dy * mS2);
+        const pos  = sPosTrail.clone().add(off);
+        trailPositions[i * 3]     = pos.x;
+        trailPositions[i * 3 + 1] = pos.y;
+        trailPositions[i * 3 + 2] = pos.z;
+      }
+      trailGeo.attributes.position.needsUpdate = true;
+      trailLine.computeLineDistances();
+
+      renderer.render(scene, camera);
     };
+    rafId = requestAnimationFrame(loop);
 
     return () => {
+      cancelAnimationFrame(rafId);
       ro.disconnect();
       renderer.dispose();
-      sceneRef.current = null;
     };
   }, []);
-
-  // ── Per-frame update ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    const { renderer, scene, camera, accentMat, trailMat, trailPositions, trailGeo, trailLine, meshes } = s;
-    const {
-      headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
-      torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
-      strideThighMesh, strideShinMesh,
-      gloveUpperMesh, gloveForeArmMesh, upperArmMesh, forearmMesh,
-      groundLine,
-    } = meshes;
-
-    const isLeft = hand === "L";
-    const pp = PITCHES[pitchId];
-    const accentHex = parseInt(pp.accent.slice(1), 16);
-    accentMat.color.setHex(accentHex);
-    accentMat.emissive.setHex(accentHex);
-    trailMat.color.setHex(accentHex);
-
-    // Camera — look straight along axis (no tilt), frustum = world Y directly
-    camera.position.copy(CAM_POSITIONS[view]);
-    camera.lookAt(0, 0, 0);
-
-    // Ground line orientation per view
-    if (view === "side") {
-      groundLine.geometry.setFromPoints([
-        new THREE.Vector3(0, -19.4, -13),
-        new THREE.Vector3(0, -19.4,  13),
-      ]);
-    } else {
-      groundLine.geometry.setFromPoints([
-        new THREE.Vector3(-13, -19.4, 0),
-        new THREE.Vector3( 13, -19.4, 0),
-      ]);
-    }
-
-    // Throw arm keyframes
-    let [eDx, eDy, wDx, wDy] = interpKF(ARM_KF[view], animT);
-    if (isLeft) { eDx = -eDx; wDx = -wDx; }
-
-    const modT     = ease(clamp((animT - 0.62) / 0.16, 0, 1));
-    const modDecay = ease(clamp((0.82 - animT) / 0.10, 0, 1));
-    const modScale = Math.min(modT, modDecay);
-    const mod = WRIST_MOD[pitchId];
-    const modDx = mod.dx * modScale * (isLeft ? -1 : 1);
-    const modDy = mod.dy * modScale;
-
-    // Shoulder position in 3D
-    const sPos = view === "side"
-      ? new THREE.Vector3(0, 0, 0)
-      : new THREE.Vector3((SHOULDER_X[view][hand] - 140) / 10, 0, 0);
-
-    const elbowPos = sPos.clone().add(offsetTo3D(view, eDx, eDy));
-    const wristPos = sPos.clone().add(offsetTo3D(view, wDx + modDx, wDy + modDy));
-
-    // Body positions
-    const headPos  = new THREE.Vector3(0,  4.6, 0);
-    const neckPos  = new THREE.Vector3(0,  1.0, 0);
-    const hipPos   = new THREE.Vector3(0, -7.5, 0);
-    const piv      = isLeft ? 1 : -1;
-    const str      = -piv;
-
-    // Hip laterals
-    const hipPivPos  = new THREE.Vector3(piv * 2.2, -7.5, 0);
-    const hipStrPos  = new THREE.Vector3(str * 2.2, -7.5, 0);
-
-    // Legs
-    const strideP = ease(clamp((animT - 0.10) / 0.42, 0, 1));
-
-    let pivKneePos, pivFootPos, strideKneePos, strideFootPos;
-    if (view === "side") {
-      const pivZ = piv * 1.0;
-      pivKneePos    = new THREE.Vector3(0, -13.6, pivZ * 1.4);
-      pivFootPos    = new THREE.Vector3(0, -19.4, pivZ * 1.0);
-      const sKZ     = lerp(str * 0.8, str * 5.8, strideP);
-      const sKkneeZ = lerp(str * 0.8, str * 3.6, strideP);
-      strideKneePos = new THREE.Vector3(0, lerp(-13.6, -10.6, strideP), sKkneeZ);
-      strideFootPos = new THREE.Vector3(0, -19.4, sKZ);
-    } else {
-      pivKneePos    = new THREE.Vector3(piv * 1.7, -13.6, 0);
-      pivFootPos    = new THREE.Vector3(piv * 2.0, -19.4, 0);
-      const sklX    = lerp(str * 1.3, str * 0.3, strideP);
-      strideKneePos = new THREE.Vector3(sklX, lerp(-13.6, -10.6, strideP), 0);
-      strideFootPos = new THREE.Vector3(str * 0.7, -19.4, 0);
-    }
-
-    // Glove arm
-    const sx_svg   = SHOULDER_X[view][hand];
-    const gsx_svg  = 280 - sx_svg;
-    const gloveRaise = ease(clamp(
-      animT < 0.38 ? animT / 0.38 :
-      animT < 0.68 ? 1 - (animT - 0.38) / 0.30 : 0,
-      0, 1
-    ));
-
-    let gShoulderPos, gElbowPos, gWristPos;
-    if (view === "side") {
-      const fwd = isLeft ? 1 : -1;
-      gShoulderPos = new THREE.Vector3(0, 0, 0);
-      gElbowPos    = new THREE.Vector3(0, lerp(-3.8, -0.8, gloveRaise), lerp(fwd * 1.2, fwd * 3.0, gloveRaise));
-      gWristPos    = new THREE.Vector3(0, lerp(-7.0, -2.0, gloveRaise), lerp(fwd * 2.2, fwd * 5.0, gloveRaise));
-    } else {
-      const inDir  = gsx_svg < 140 ? 1 : -1;
-      gShoulderPos = new THREE.Vector3((gsx_svg - 140) / 10, 0, 0);
-      gElbowPos    = new THREE.Vector3(
-        gShoulderPos.x + inDir * lerp(2.0, 1.2, gloveRaise),
-        lerp(-3.8, -0.6, gloveRaise), 0
-      );
-      gWristPos    = new THREE.Vector3(
-        gShoulderPos.x + inDir * lerp(1.6, 0.8, gloveRaise),
-        lerp(-7.0, -1.4, gloveRaise), 0
-      );
-    }
-
-    // Apply positions
-    headMesh.position.copy(headPos);
-    updateLimb(torsoMesh, neckPos, hipPos);
-    updateLimb(hipMesh, hipPivPos, hipStrPos);
-    updateLimb(pivThighMesh, hipPivPos, pivKneePos);
-    updateLimb(pivShinMesh,  pivKneePos, pivFootPos);
-    updateLimb(strideThighMesh, hipStrPos, strideKneePos);
-    updateLimb(strideShinMesh,  strideKneePos, strideFootPos);
-    updateLimb(gloveUpperMesh,   gShoulderPos, gElbowPos);
-    updateLimb(gloveForeArmMesh, gElbowPos,    gWristPos);
-    gloveWristMesh.position.copy(gWristPos);
-    shoulderMesh.position.copy(sPos);
-    elbowMesh.position.copy(elbowPos);
-    wristMesh.position.copy(wristPos);
-    updateLimb(upperArmMesh, sPos,     elbowPos);
-    updateLimb(forearmMesh,  elbowPos, wristPos);
-    ballMesh.position.copy(wristPos);
-
-    // Wrist trail
-    const TRAIL_N = 38;
-    const sPosTrail = view === "side"
-      ? new THREE.Vector3(0, 0, 0)
-      : new THREE.Vector3((SHOULDER_X[view][hand] - 140) / 10, 0, 0);
-    for (let i = 0; i < TRAIL_N; i++) {
-      const tt = i / (TRAIL_N - 1);
-      let [,, wdx, wdy] = interpKF(ARM_KF[view], tt);
-      if (isLeft) wdx = -wdx;
-      const wMod = WRIST_MOD[pitchId];
-      const mT2  = ease(clamp((tt - 0.62) / 0.16, 0, 1));
-      const mD2  = ease(clamp((0.82 - tt) / 0.10, 0, 1));
-      const mS2  = Math.min(mT2, mD2);
-      const off  = offsetTo3D(view, wdx + wMod.dx * mS2 * (isLeft ? -1 : 1), wdy + wMod.dy * mS2);
-      const pos  = sPosTrail.clone().add(off);
-      trailPositions[i * 3]     = pos.x;
-      trailPositions[i * 3 + 1] = pos.y;
-      trailPositions[i * 3 + 2] = pos.z;
-    }
-    trailGeo.attributes.position.needsUpdate = true;
-    trailLine.computeLineDistances();
-
-    renderer.render(scene, camera);
-  }, [animT, view, hand, pitchId]);
 
   const phase = PHASES.find(([s, e]) => animT >= s && animT < e)?.[2] ?? "Set Position";
 
