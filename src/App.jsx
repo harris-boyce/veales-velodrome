@@ -451,7 +451,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
 
     sceneRef.current = {
       renderer, scene, camera,
-      accentMat, trailMat, trailPositions, trailGeo,
+      accentMat, trailMat, trailPositions, trailGeo, trailLine,
       meshes: {
         headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
         torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
@@ -472,7 +472,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
   useEffect(() => {
     const s = sceneRef.current;
     if (!s) return;
-    const { renderer, scene, camera, accentMat, trailMat, trailPositions, trailGeo, meshes } = s;
+    const { renderer, scene, camera, accentMat, trailMat, trailPositions, trailGeo, trailLine, meshes } = s;
     const {
       headMesh, shoulderMesh, elbowMesh, wristMesh, ballMesh, gloveWristMesh,
       torsoMesh, hipMesh, pivThighMesh, pivShinMesh,
@@ -639,7 +639,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
       }}>{phase.toUpperCase()}</div>
 
       <div ref={containerRef} style={{ position: "relative", width: "100%", maxWidth: 300, margin: "0 auto" }}>
-        <canvas ref={canvasRef} style={{ display: "block", width: "100%" }} />
+        <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "auto" }} />
         <div style={{
           position: "absolute", bottom: 8, left: 0, right: 0,
           textAlign: "center",
