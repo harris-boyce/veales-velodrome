@@ -408,10 +408,13 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     const pivShinMesh      = makeLimb(0.28, dimMat);
     const strideThighMesh  = makeLimb(0.30, bodyMat);
     const strideShinMesh   = makeLimb(0.28, bodyMat);
-    const gloveUpperMesh   = makeLimb(0.22, dimMat);
-    const gloveForeArmMesh = makeLimb(0.20, dimMat);
-    const upperArmMesh     = makeLimb(0.32, accentMat);
-    const forearmMesh      = makeLimb(0.28, accentMat);
+    const shoulderBarMesh   = makeLimb(0.20, bodyMat);
+    const gloveUpperMesh    = makeLimb(0.22, dimMat);
+    const gloveForeArmMesh  = makeLimb(0.20, dimMat);
+    const upperArmMesh      = makeLimb(0.32, accentMat);
+    const forearmMesh       = makeLimb(0.28, accentMat);
+
+    const gloveShoulderMesh = makeSphere(0.40, dimMat);
 
     // Ground line
     const groundGeo = new THREE.BufferGeometry().setFromPoints([
@@ -567,6 +570,8 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
       headMesh.position.copy(headPos);
       updateLimb(neckMesh,  neckPos, headPos);
       updateLimb(torsoMesh, neckPos, hipPos);
+      gloveShoulderMesh.position.copy(gShoulderPos);
+      updateLimb(shoulderBarMesh, sPos, gShoulderPos);
       updateLimb(hipMesh,   hipPivPos, hipStrPos);
       updateLimb(pivThighMesh,    hipPivPos,    pivKneePos);
       updateLimb(pivShinMesh,     pivKneePos,   pivFootPos);
