@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -48,6 +49,7 @@ const PITCHES = [
         { x: 100, y: 18, text: "12 o'clock release", anchor: "middle" },
       ],
     },
+    movement: { hBreak: 0, vBreak: +4 },
   },
   {
     id: 1, order: 2, name: "Curveball", short: "Curve", accent: "#7C3AED",
@@ -79,6 +81,7 @@ const PITCHES = [
         { x: 95, y: 20, text: "snap down", anchor: "middle" },
       ],
     },
+    movement: { hBreak: +6, vBreak: -13 },
   },
   {
     id: 2, order: 3, name: "Changeup", short: "Change", accent: "#D97706",
@@ -110,6 +113,7 @@ const PITCHES = [
         { x: 100, y: 18, text: "pronate out", anchor: "middle" },
       ],
     },
+    movement: { hBreak: +7, vBreak: -5 },
   },
   {
     id: 3, order: 4, name: "Slider", short: "Slider", accent: "#DC2626",
@@ -141,6 +145,7 @@ const PITCHES = [
         { x: 98, y: 20, text: "cut outside-in", anchor: "middle" },
       ],
     },
+    movement: { hBreak: -3, vBreak: -5 },
   },
 ];
 
@@ -337,10 +342,13 @@ function offsetTo3D(view, dx, dy) {
   return new THREE.Vector3(dx / 10, -dy / 10, 0);
 }
 
+// Camera positions centered on body midpoint (y=−7.4) so orbit stays framed.
+const CAM_Y      = -7.4;
+const CAM_DIST   = 30;
 const CAM_POSITIONS = {
-  front: new THREE.Vector3(0,  0,  30),
-  side:  new THREE.Vector3(30, 0,   0),
-  back:  new THREE.Vector3(0,  0, -30),
+  front: new THREE.Vector3(0,        CAM_Y, CAM_DIST),
+  side:  new THREE.Vector3(CAM_DIST, CAM_Y, 0),
+  back:  new THREE.Vector3(0,        CAM_Y, -CAM_DIST),
 };
 
 // ─── STICK FIGURE (THREE.JS) ──────────────────────────────────────────────────
@@ -350,6 +358,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
   const containerRef = useRef(null);
   const propsRef     = useRef({ pitchId, view, hand, animT });
   propsRef.current   = { pitchId, view, hand, animT };
+  const viewRef      = useRef(null);
 
   // ── One-time setup + RAF render loop ────────────────────────────────────────
   useEffect(() => {
@@ -367,9 +376,20 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
     dirLight.position.set(5, 10, 10);
     scene.add(dirLight);
 
-    const camera = new THREE.OrthographicCamera(-13, 13, 6.6, -21.4, 0.1, 100);
+    // Symmetric frustum around body center (head y=4.6, feet y=-19.4, mid=−7.4).
+    // ±12.2 from mid keeps full figure in frame; camera is also at y=CAM_Y so no tilt.
+    const camera = new THREE.OrthographicCamera(-12, 12, 12.2, -12.2, 0.1, 100);
     camera.position.copy(CAM_POSITIONS.front);
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(0, CAM_Y, 0);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping  = true;
+    controls.dampingFactor  = 0.08;
+    controls.minPolarAngle  = Math.PI * 0.10;
+    controls.maxPolarAngle  = Math.PI * 0.85;
+    controls.enableZoom     = false;
+    controls.enablePan      = false;
+    controls.target.set(0, CAM_Y, 0);
 
     // Materials
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -442,11 +462,11 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
       const h = Math.round(w * 298 / 280) || 1;
       renderer.setSize(w, h, false);
       const aspect = w / h;
-      const fh = 28;
+      const fh = 24.4; // total frustum height (±12.2)
       camera.left   = -fh * aspect / 2;
       camera.right  =  fh * aspect / 2;
-      camera.top    =  6.6;
-      camera.bottom = -21.4;
+      camera.top    =  12.2;
+      camera.bottom = -12.2;
       camera.updateProjectionMatrix();
     };
     updateSize();
@@ -466,9 +486,14 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
       accentMat.emissive.setHex(accentHex);
       trailMat.color.setHex(accentHex);
 
-      // Camera
-      camera.position.copy(CAM_POSITIONS[v]);
-      camera.lookAt(0, 0, 0);
+      // Snap camera to preset when view button is clicked; orbit resumes from there
+      if (v !== viewRef.current) {
+        viewRef.current = v;
+        camera.position.copy(CAM_POSITIONS[v]);
+        controls.target.set(0, CAM_Y, 0);
+        controls.update();
+      }
+      controls.update();
 
       // Ground line orientation per view
       if (v === "side") {
@@ -614,6 +639,7 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
 
     return () => {
       cancelAnimationFrame(rafId);
+      controls.dispose();
       ro.disconnect();
       renderer.dispose();
     };
@@ -640,12 +666,207 @@ function PitcherFigure({ pitchId, view, hand, animT }) {
           color: "rgba(255,255,255,0.18)",
           pointerEvents: "none",
         }}>
-          {view === "front"
-            ? "← FACING PITCHER →"
-            : view === "side"
-            ? "← BACK  ·  ARM SIDE  ·  PLATE →"
-            : "← FACING HOME PLATE →"}
+          DRAG TO ROTATE  ·  SNAP: FRONT / SIDE / BACK
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── PITCH MOVEMENT VIZ ──────────────────────────────────────────────────────
+function PitchMovementViz({ pitchId, hand }) {
+  const isLeft = hand === "L";
+  const PX    = 3.5;   // px per inch (batter's eye)
+  const CPX   = 4.5;   // px per inch (movement chart)
+
+  // Strike zone constants for batter's eye SVG (200 wide × 250 tall)
+  const zW = 78, zH = 88, zCx = 100, zTop = 105;
+  const zBot = zTop + zH, zCy = (zTop + zBot) / 2;
+  const relX = 100, relY = 18;
+
+  // Movement chart center
+  const mCx = 100, mCy = 105;
+
+  // For batter's eye: positive hBreak (arm-side) goes LEFT from batter's view
+  const bx = (p) => {
+    const hB = isLeft ? -p.movement.hBreak : p.movement.hBreak;
+    return zCx - hB * PX;
+  };
+  const by = (p) => zCy - p.movement.vBreak * PX;
+
+  // For movement chart: positive hBreak goes RIGHT (arm-side on right for RHP)
+  const mx = (p) => {
+    const hB = isLeft ? -p.movement.hBreak : p.movement.hBreak;
+    return mCx + hB * CPX;
+  };
+  const my = (p) => mCy - p.movement.vBreak * CPX;
+
+  const pp = PITCHES[pitchId];
+  const armLabel  = isLeft ? "GLOVE" : "ARM";
+  const gloveLabel = isLeft ? "ARM" : "GLOVE";
+
+  return (
+    <div>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+        gap: 16,
+      }}>
+
+        {/* Panel A — Batter's Eye */}
+        <div>
+          <div style={{
+            fontFamily: "ui-monospace,monospace", fontSize: 9,
+            letterSpacing: "0.15em", color: "rgba(255,255,255,0.35)",
+            textAlign: "center", marginBottom: 8,
+          }}>BATTER'S VIEW</div>
+          <svg viewBox="0 0 200 250" style={{ width: "100%", display: "block" }}>
+            <rect width={200} height={250} fill="#0e1117" rx={6} />
+            <text x={100} y={12} textAnchor="middle"
+              fill="rgba(255,255,255,0.18)" fontSize={7}
+              fontFamily="ui-monospace,monospace" letterSpacing="0.10em">
+              ↑ PITCHER
+            </text>
+            {/* Strike zone */}
+            <rect x={zCx - zW/2} y={zTop} width={zW} height={zH}
+              fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.18)" strokeWidth={1} />
+            {/* 3×3 grid */}
+            {[1,2].map(i => (
+              <g key={i}>
+                <line x1={zCx - zW/2 + i*zW/3} y1={zTop}
+                      x2={zCx - zW/2 + i*zW/3} y2={zBot}
+                  stroke="rgba(255,255,255,0.07)" strokeWidth={0.5} />
+                <line x1={zCx - zW/2} y1={zTop + i*zH/3}
+                      x2={zCx + zW/2} y2={zTop + i*zH/3}
+                  stroke="rgba(255,255,255,0.07)" strokeWidth={0.5} />
+              </g>
+            ))}
+            {/* Home plate */}
+            <polygon
+              points={`${zCx-13},${zBot+3} ${zCx+13},${zBot+3} ${zCx+13},${zBot+11} ${zCx},${zBot+17} ${zCx-13},${zBot+11}`}
+              fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth={0.8} />
+            {/* Other pitches (faint) */}
+            {PITCHES.map((p2, idx) => idx === pitchId ? null : (
+              <g key={idx} opacity={0.22}>
+                <line x1={relX} y1={relY} x2={bx(p2)} y2={by(p2)}
+                  stroke={p2.accent} strokeWidth={0.8} strokeDasharray="3,3" />
+                <circle cx={bx(p2)} cy={by(p2)} r={4} fill={p2.accent} />
+                <text x={bx(p2)+6} y={by(p2)+3} fill={p2.accent}
+                  fontSize={7} fontFamily="ui-monospace,monospace">{p2.short}</text>
+              </g>
+            ))}
+            {/* Active pitch */}
+            <line x1={relX} y1={relY} x2={bx(pp)} y2={by(pp)}
+              stroke={pp.accent} strokeWidth={1.5} strokeDasharray="5,4" opacity={0.75} />
+            <circle cx={bx(pp)} cy={by(pp)} r={9} fill={pp.accent} opacity={0.15} />
+            <circle cx={bx(pp)} cy={by(pp)} r={4.5} fill={pp.accent} />
+            <text x={bx(pp)+8} y={by(pp)+4} fill={pp.accent}
+              fontSize={8} fontFamily="ui-monospace,monospace" fontWeight="bold">{pp.short}</text>
+            {/* Side labels */}
+            <text x={12} y={zCy+4} fill="rgba(255,255,255,0.22)"
+              fontSize={7} fontFamily="ui-monospace,monospace">{armLabel}</text>
+            <text x={188} y={zCy+4} textAnchor="end" fill="rgba(255,255,255,0.22)"
+              fontSize={7} fontFamily="ui-monospace,monospace">{gloveLabel}</text>
+          </svg>
+        </div>
+
+        {/* Panel B — Movement Chart */}
+        <div>
+          <div style={{
+            fontFamily: "ui-monospace,monospace", fontSize: 9,
+            letterSpacing: "0.15em", color: "rgba(255,255,255,0.35)",
+            textAlign: "center", marginBottom: 8,
+          }}>MOVEMENT CHART · vs. flat</div>
+          <svg viewBox="0 0 200 210" style={{ width: "100%", display: "block" }}>
+            <rect width={200} height={210} fill="#0e1117" rx={6} />
+            {/* Grid */}
+            {[-12,-8,-4,4,8,12].map(v => (
+              <g key={v} opacity={0.10}>
+                <line x1={mCx + v*CPX} y1={22} x2={mCx + v*CPX} y2={188}
+                  stroke="white" strokeWidth={0.5} />
+                <line x1={22} y1={mCy - v*CPX} x2={178} y2={mCy - v*CPX}
+                  stroke="white" strokeWidth={0.5} />
+              </g>
+            ))}
+            {/* Crosshairs */}
+            <line x1={20} y1={mCy} x2={180} y2={mCy}
+              stroke="rgba(255,255,255,0.22)" strokeWidth={0.8} />
+            <line x1={mCx} y1={22} x2={mCx} y2={188}
+              stroke="rgba(255,255,255,0.22)" strokeWidth={0.8} />
+            {/* Axis labels */}
+            <text x={mCx} y={18} textAnchor="middle" fill="rgba(255,255,255,0.30)"
+              fontSize={7} fontFamily="ui-monospace,monospace">RISE</text>
+            <text x={mCx} y={200} textAnchor="middle" fill="rgba(255,255,255,0.30)"
+              fontSize={7} fontFamily="ui-monospace,monospace">DROP</text>
+            <text x={22} y={mCy-5} fill="rgba(255,255,255,0.30)"
+              fontSize={7} fontFamily="ui-monospace,monospace">{gloveLabel}</text>
+            <text x={178} y={mCy-5} textAnchor="end" fill="rgba(255,255,255,0.30)"
+              fontSize={7} fontFamily="ui-monospace,monospace">{armLabel}</text>
+            {/* Inch tick labels */}
+            {[-12,-8,-4,4,8,12].map(v => (
+              <text key={v} x={mCx + v*CPX} y={mCy+10} textAnchor="middle"
+                fill="rgba(255,255,255,0.15)" fontSize={6}
+                fontFamily="ui-monospace,monospace">{v}"</text>
+            ))}
+            {/* Hand indicator */}
+            <text x={180} y={20} textAnchor="end" fill="rgba(255,255,255,0.25)"
+              fontSize={8} fontFamily="ui-monospace,monospace">{hand}HP</text>
+            {/* All pitches */}
+            {PITCHES.map((p2, idx) => {
+              const active = idx === pitchId;
+              const cx2 = mx(p2), cy2 = my(p2);
+              return (
+                <g key={idx}>
+                  {active && <circle cx={cx2} cy={cy2} r={16} fill={p2.accent} opacity={0.10} />}
+                  <circle cx={cx2} cy={cy2} r={active ? 7 : 5}
+                    fill={p2.accent} opacity={active ? 1 : 0.32} />
+                  <text x={cx2} y={cy2 - 10} textAnchor="middle"
+                    fill={p2.accent} opacity={active ? 1 : 0.32}
+                    fontSize={7} fontFamily="ui-monospace,monospace">{p2.short}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+
+      {/* Stats row */}
+      <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {[
+          {
+            label: "H. BREAK",
+            val: `${((isLeft ? -1 : 1) * pp.movement.hBreak) > 0 ? "+" : ""}${(isLeft ? -1 : 1) * pp.movement.hBreak}"`,
+            sub: `${armLabel.toLowerCase()}-side`,
+          },
+          {
+            label: "V. BREAK",
+            val: `${pp.movement.vBreak > 0 ? "+" : ""}${pp.movement.vBreak}"`,
+            sub: "vs. flat",
+          },
+          {
+            label: "PITCH BREAK",
+            val: pp.pitchBreak,
+            sub: null,
+          },
+        ].map(({ label, val, sub }) => (
+          <div key={label} style={{
+            flex: "1 1 130px", padding: "8px 12px",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 8,
+          }}>
+            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 8,
+              letterSpacing: "0.12em", color: "rgba(255,255,255,0.35)", marginBottom: 3 }}>
+              {label}
+            </div>
+            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 14,
+              fontWeight: 700, color: pp.accent }}>
+              {val}
+            </div>
+            {sub && <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 8,
+              color: "rgba(255,255,255,0.25)", marginTop: 2 }}>{sub}</div>}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1463,10 +1684,11 @@ export default function App() {
           borderBottom: "1px solid rgba(255,255,255,0.10)",
           marginBottom: 22,
         }}>
-          <button style={tabStyle("arm")}     onClick={() => setTab("arm")}>ARM MOTION</button>
-          <button style={tabStyle("ball")}    onClick={() => setTab("ball")}>BALL & SPIN</button>
-          <button style={tabStyle("drills")}  onClick={() => setTab("drills")}>DRILLS & MASTERY</button>
-          <button style={tabStyle("library")} onClick={() => setTab("library")}>PITCH LIBRARY</button>
+          <button style={tabStyle("arm")}      onClick={() => setTab("arm")}>ARM MOTION</button>
+          <button style={tabStyle("ball")}     onClick={() => setTab("ball")}>BALL & SPIN</button>
+          <button style={tabStyle("move")}     onClick={() => setTab("move")}>MOVEMENT</button>
+          <button style={tabStyle("drills")}   onClick={() => setTab("drills")}>DRILLS & MASTERY</button>
+          <button style={tabStyle("library")}  onClick={() => setTab("library")}>PITCH LIBRARY</button>
         </div>
 
         {/* ARM MOTION */}
@@ -1539,6 +1761,17 @@ export default function App() {
             }}>
               <WristAnim pitchId={pitchId} animT={animT} />
             </div>
+          </div>
+        )}
+
+        {/* MOVEMENT */}
+        {tab === "move" && (
+          <div style={{
+            background: "#13151C",
+            border: `1px solid ${p.accent}28`,
+            borderRadius: 14, padding: "22px 16px",
+          }}>
+            <PitchMovementViz pitchId={pitchId} hand={hand} />
           </div>
         )}
 
