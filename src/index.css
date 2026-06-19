@@ -1,0 +1,19 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #0E1117;
+  color: #F0EEE9;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@keyframes sp-cw {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes sp-ccw {
+  to { transform: rotate(-360deg); }
+}
